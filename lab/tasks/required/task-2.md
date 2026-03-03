@@ -119,7 +119,8 @@ Title: `[Task] Back-end Testing`
 
 1. [Open the file](../../../wiki/vs-code.md#open-the-file):
    [`backend/app/routers/interactions.py`](../../../backend/app/routers/interactions.py).
-2. Fix the bug in the `_filter_by_max_item_id` function.
+
+2. Fix the bug in the `filter_by_max_item_id` function.
 
 3. <details><summary>Click to open a hint</summary>
 
@@ -130,7 +131,7 @@ Title: `[Task] Back-end Testing`
 
 4. <details><summary>Click to open the solution</summary>
 
-   Find this line in `_filter_by_max_item_id`:
+   Find this line in `filter_by_max_item_id`:
 
    ```python
    return [i for i in interactions if i.item_id < max_item_id]  # BUG
