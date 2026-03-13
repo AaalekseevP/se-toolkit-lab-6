@@ -49,7 +49,7 @@ If using [`Windows`](./operating-system.md#windows), [switch to the `Linux` shel
 ### `bash`
 
 `Bash` (short for "Bourne Again SHell") is an interactive command interpreter and scripting language developed for `Unix`-like operating systems (e.g., [`Linux`](./linux.md#what-is-linux)).
-[[source]]
+[[source](https://en.wikipedia.org/wiki/Bash_(Unix_shell))]
 
 > [!NOTE]
 > `Bash` is the default login shell for `Ubuntu`.
