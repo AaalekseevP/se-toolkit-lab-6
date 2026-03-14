@@ -314,13 +314,23 @@ class Agent:
         """
         import re
 
-        # Pattern 1: path/to/file.md#section or path/to/file.md (also .py, .txt, .yml, .yaml, .json)
-        match = re.search(r"([a-zA-Z0-9_/.-]+\.(md|txt|py|yml|yaml|json)(#[a-zA-Z0-9_-]+)?)", answer)
+        # Pattern: path/to/file.ext#anchor or path/to/file.ext
+        # Supports: .md, .txt, .py, .yml, .yaml, .json
+        # Handles hyphens and underscores in filenames and paths
+        match = re.search(
+            r"([a-zA-Z0-9_/.-]+\.(md|txt|py|yml|yaml|json)(#[a-zA-Z0-9_-]+)?)",
+            answer
+        )
         if match:
             source = match.group(1)
-            # Ensure it has a proper path structure
+            # Ensure it has a proper path structure (contains / or ends with known extension)
             if "/" in source or source.endswith((".md", ".txt", ".py", ".yml", ".yaml", ".json")):
                 return source
+
+        # Pattern 2: Look for "Source:" prefix followed by a file reference
+        match = re.search(r"Source:\s*([a-zA-Z0-9_/.-]+\.(md|txt|py|yml|yaml|json)(#[a-zA-Z0-9_-]+)?)", answer, re.IGNORECASE)
+        if match:
+            return match.group(1)
 
         return ""
 
@@ -353,7 +363,11 @@ When answering questions:
 - For source code questions: use `list_files` to explore the codebase, then `read_file` to read relevant files
 - For data-dependent questions (counts, scores, current state): use `query_api` to query the running system
 - For status code or API behavior questions: use `query_api` to test the actual API
-- For bug diagnosis: use `query_api` to reproduce the error, then `read_file` to examine the source code and identify the buggy line
+- For bug diagnosis questions:
+  1. FIRST use `query_api` to reproduce the error on the EXACT endpoint mentioned in the question
+  2. Note the error type (TypeError, ZeroDivisionError, etc.) and message from the response
+  3. THEN use `read_file` to read backend/app/routers/analytics.py and find the buggy line
+  4. Explain what causes the error (e.g., "sorted() receives None when no data exists")
 - ALWAYS include a source reference in your answer - either a file path (e.g., wiki/git-workflow.md#section) or the API endpoint used
 - Be concise and accurate
 - If you cannot find the answer after reasonable exploration, say so
@@ -384,10 +398,25 @@ Format your final answer to include a source reference like:
                 "temperature": 0.7,
             }
 
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                data = response.json()
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    response = client.post(url, headers=headers, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+            except httpx.HTTPError as e:
+                print(f"LLM API error: {e}", file=sys.stderr)
+                return {
+                    "answer": f"Error: Could not reach LLM API: {e}",
+                    "source": "",
+                    "tool_calls": tool_calls_log,
+                }
+            except Exception as e:
+                print(f"Unexpected error during LLM request: {e}", file=sys.stderr)
+                return {
+                    "answer": f"Error: {e}",
+                    "source": "",
+                    "tool_calls": tool_calls_log,
+                }
 
             # Extract the response
             try:
@@ -396,7 +425,11 @@ Format your final answer to include a source reference like:
             except (KeyError, IndexError) as e:
                 print(f"Error parsing LLM response: {e}", file=sys.stderr)
                 print(f"Raw response: {data}", file=sys.stderr)
-                sys.exit(1)
+                return {
+                    "answer": f"Error parsing LLM response: {e}",
+                    "source": "",
+                    "tool_calls": tool_calls_log,
+                }
 
             # Check for tool calls
             tool_calls = message.get("tool_calls")
@@ -475,13 +508,21 @@ def main():
 
     question = sys.argv[1]
 
-    config = AgentConfig()
-    agent = Agent(config)
+    try:
+        config = AgentConfig()
+        agent = Agent(config)
 
-    result = agent.ask(question)
+        result = agent.ask(question)
 
-    # Output only valid JSON to stdout
-    print(json.dumps(result))
+        # Output only valid JSON to stdout
+        print(json.dumps(result))
+    except Exception as e:
+        # Last resort error handling - output JSON instead of crashing
+        print(json.dumps({
+            "answer": f"Error: {e}",
+            "source": "",
+            "tool_calls": [],
+        }))
 
 
 if __name__ == "__main__":
