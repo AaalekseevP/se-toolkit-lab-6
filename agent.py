@@ -36,6 +36,10 @@ class AgentConfig:
         self.api_base = os.getenv("LLM_API_BASE")
         self.model = os.getenv("LLM_MODEL", "qwen3-coder-plus")
         self.project_root = Path(__file__).parent
+        
+        # Backend API configuration
+        self.lms_api_key = os.getenv("LMS_API_KEY")
+        self.agent_api_base_url = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
 
         if not self.api_key:
             print("Error: LLM_API_KEY not set in .env.agent.secret", file=sys.stderr)
@@ -142,6 +146,59 @@ class Agent:
         except Exception as e:
             return f"Error listing directory: {e}"
 
+    def query_api(self, method: str, path: str, body: str = None, auth: bool = True) -> str:
+        """
+        Query the deployed backend API.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE, PATCH).
+            path: API path (e.g., '/items/', '/analytics/completion-rate').
+            body: Optional JSON request body for POST/PUT/PATCH requests.
+            auth: Whether to include authentication header (default True).
+
+        Returns:
+            JSON string with status_code and body, or an error message.
+        """
+        # Validate method
+        allowed_methods = ["GET", "POST", "PUT", "DELETE", "PATCH"]
+        if method.upper() not in allowed_methods:
+            return f"Error: Invalid method '{method}'. Allowed: {', '.join(allowed_methods)}"
+
+        # Validate path
+        if not path.startswith("/"):
+            return f"Error: Path must start with '/': {path}"
+
+        # Construct full URL
+        base_url = self.config.agent_api_base_url.rstrip("/")
+        url = f"{base_url}{path}"
+
+        headers = {
+            "Content-Type": "application/json",
+        }
+        
+        # Only add auth header if requested
+        if auth and self.config.lms_api_key:
+            headers["Authorization"] = f"Bearer {self.config.lms_api_key}"
+
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                if body:
+                    response = client.request(method, url, headers=headers, json=json.loads(body))
+                else:
+                    response = client.request(method, url, headers=headers)
+
+            result = {
+                "status_code": response.status_code,
+                "body": response.text,
+            }
+            return json.dumps(result)
+        except httpx.HTTPError as e:
+            return f"Error: HTTP request failed: {e}"
+        except json.JSONDecodeError as e:
+            return f"Error: Invalid JSON body: {e}"
+        except Exception as e:
+            return f"Error: API request failed: {e}"
+
     def _get_tool_definitions(self) -> list[dict]:
         """Get the tool definitions for the LLM."""
         return [
@@ -179,6 +236,36 @@ class Agent:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "query_api",
+                    "description": "Query the deployed backend API. Use this to get real-time data from the system, check status codes, or diagnose API errors. The API requires Bearer token authentication by default.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "method": {
+                                "type": "string",
+                                "description": "HTTP method (GET, POST, PUT, DELETE, PATCH)",
+                                "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "API path (e.g., '/items/', '/analytics/completion-rate')",
+                            },
+                            "body": {
+                                "type": "string",
+                                "description": "Optional JSON request body for POST/PUT/PATCH requests",
+                            },
+                            "auth": {
+                                "type": "boolean",
+                                "description": "Whether to include authentication header (default: true). Set to false to test unauthenticated access.",
+                            },
+                        },
+                        "required": ["method", "path"],
+                    },
+                },
+            },
         ]
 
     def _execute_tool(self, tool_name: str, args: dict) -> str:
@@ -198,6 +285,12 @@ class Agent:
         elif tool_name == "list_files":
             path = args.get("path", "")
             result = self.list_files(path)
+        elif tool_name == "query_api":
+            method = args.get("method", "GET")
+            path = args.get("path", "")
+            body = args.get("body")
+            auth = args.get("auth", True)  # Default to authenticated
+            result = self.query_api(method, path, body, auth)
         else:
             result = f"Error: Unknown tool: {tool_name}"
 
@@ -211,6 +304,7 @@ class Agent:
         - wiki/file.md#section
         - Source: wiki/file.md
         - (wiki/file.md)
+        - backend/app/routers/analytics.py#function
 
         Args:
             answer: The answer text.
@@ -220,12 +314,12 @@ class Agent:
         """
         import re
 
-        # Pattern 1: wiki/file.md#section or wiki/file.md
-        match = re.search(r"([a-zA-Z0-9_/.-]+\.(md|txt)(#[a-zA-Z0-9_-]+)?)", answer)
+        # Pattern 1: path/to/file.md#section or path/to/file.md (also .py, .txt, .yml, .yaml, .json)
+        match = re.search(r"([a-zA-Z0-9_/.-]+\.(md|txt|py|yml|yaml|json)(#[a-zA-Z0-9_-]+)?)", answer)
         if match:
             source = match.group(1)
             # Ensure it has a proper path structure
-            if "/" in source or source.endswith(".md") or source.endswith(".txt"):
+            if "/" in source or source.endswith((".md", ".txt", ".py", ".yml", ".yaml", ".json")):
                 return source
 
         return ""
@@ -247,18 +341,28 @@ class Agent:
             "Authorization": f"Bearer {self.config.api_key}",
         }
 
-        system_prompt = """You are a documentation agent that helps answer questions by reading project files.
+        system_prompt = """You are a documentation and system agent that helps answer questions by reading project files and querying the running backend API.
+
+You have three tools available:
+1. `list_files` - Discover what files exist in directories like 'wiki' or 'backend/app/routers'
+2. `read_file` - Read wiki documentation, source code, or configuration files
+3. `query_api` - Query the running backend API to get real-time data, check status codes, or diagnose errors
 
 When answering questions:
-1. Use `list_files` to discover what files exist in directories like 'wiki'
-2. Use `read_file` to read relevant files and find the answer
-3. Always cite your source by including the file path and section anchor (e.g., wiki/git-workflow.md#resolving-merge-conflicts)
-4. Be concise and accurate
-5. If you cannot find the answer after reasonable exploration, say so
+- For documentation questions: use `list_files` to discover wiki files, then `read_file` to find answers
+- For source code questions: use `list_files` to explore the codebase, then `read_file` to read relevant files
+- For data-dependent questions (counts, scores, current state): use `query_api` to query the running system
+- For status code or API behavior questions: use `query_api` to test the actual API
+- For bug diagnosis: use `query_api` to reproduce the error, then `read_file` to examine the source code and identify the buggy line
+- ALWAYS include a source reference in your answer - either a file path (e.g., wiki/git-workflow.md#section) or the API endpoint used
+- Be concise and accurate
+- If you cannot find the answer after reasonable exploration, say so
 
 Format your final answer to include a source reference like:
 - "According to wiki/git-workflow.md#resolving-merge-conflicts, ..."
 - "Source: wiki/git-workflow.md#section-name"
+- "Source: backend/app/routers/analytics.py#get_completion_rate"
+- For API queries, mention the endpoint used
 """
 
         messages = [
