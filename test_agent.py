@@ -76,3 +76,52 @@ def test_agent_output_has_tool_calls_field():
     output = json.loads(result.stdout)
     assert "tool_calls" in output, "Output must contain 'tool_calls' field"
     assert isinstance(output["tool_calls"], list), "'tool_calls' must be an array"
+
+
+def test_agent_uses_read_file_for_merge_conflict_question():
+    """Test that agent uses read_file tool when asked about merge conflicts."""
+    result = subprocess.run(
+        [UV, "run", str(AGENT_SCRIPT), "How do you resolve a merge conflict?"],
+        capture_output=True,
+        text=True,
+        cwd=str(PROJECT_ROOT),
+        timeout=120,
+    )
+
+    assert result.returncode == 0, f"Agent failed: {result.stderr}"
+
+    output = json.loads(result.stdout)
+    assert "tool_calls" in output, "Output must contain 'tool_calls' field"
+    assert isinstance(output["tool_calls"], list), "'tool_calls' must be an array"
+
+    # Check that read_file was used
+    tool_names = [tc["tool"] for tc in output["tool_calls"]]
+    assert "read_file" in tool_names, "Expected read_file to be called"
+
+    # Check that source references a wiki file about git
+    assert "source" in output, "Output must contain 'source' field"
+    assert output["source"].startswith("wiki/git"), \
+        f"Expected source to reference a wiki git file, got: {output.get('source', '')}"
+    assert ".md" in output["source"], \
+        f"Expected source to be a markdown file, got: {output.get('source', '')}"
+
+
+def test_agent_uses_list_files_for_wiki_listing_question():
+    """Test that agent uses list_files tool when asked about wiki files."""
+    result = subprocess.run(
+        [UV, "run", str(AGENT_SCRIPT), "What files are in the wiki?"],
+        capture_output=True,
+        text=True,
+        cwd=str(PROJECT_ROOT),
+        timeout=120,
+    )
+
+    assert result.returncode == 0, f"Agent failed: {result.stderr}"
+
+    output = json.loads(result.stdout)
+    assert "tool_calls" in output, "Output must contain 'tool_calls' field"
+    assert isinstance(output["tool_calls"], list), "'tool_calls' must be an array"
+
+    # Check that list_files was used
+    tool_names = [tc["tool"] for tc in output["tool_calls"]]
+    assert "list_files" in tool_names, "Expected list_files to be called"
